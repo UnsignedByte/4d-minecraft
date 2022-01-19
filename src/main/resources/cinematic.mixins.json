@@ -1,0 +1,16 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.cinematic.cinematic.mixin",
+  "compatibilityLevel": "JAVA_8",
+  "mixins": [
+    "EatEventMixin",
+    "PlayerTickMixin",
+    "FallEventMixin"
+  ],
+  "client": [
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}

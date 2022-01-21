@@ -17,6 +17,7 @@ import net.minecraft.world.GameMode;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.List;
 
 public class Cinematic implements ModInitializer {
@@ -26,15 +27,25 @@ public class Cinematic implements ModInitializer {
 
     private boolean connected = false;
     private OutputStream arduino;
+    private int tickTimer = 0;
 
     @Override
     public void onInitialize() {
 
         // Initialize arduino serial port
-        SerialPort port = SerialPort.getCommPort("COM5");
+        if (SerialPort.getCommPorts().length == 0) {
+            System.out.println("No Available serial ports found, aborting...");
+            return;
+        }
+        SerialPort port = SerialPort.getCommPorts()[0];
+        System.out.printf("Choosing %s out of available serial ports: %s%n",  port, Arrays.toString(SerialPort.getCommPorts()));
         port.setComPortParameters(9600, 8, 1, 0);
         port.setComPortTimeouts(SerialPort.TIMEOUT_NONBLOCKING, 0, 0);
-        System.out.printf("Open port: %b%n", port.openPort());
+        if (!port.openPort()) {
+            System.out.printf("Failed to open port %s, aborting...%n", port);
+            return;
+        }
+        System.out.printf("Successfully opened port %s.%n", port);
 
         port.addDataListener(new SerialPortDataListener() {
             @Override
@@ -53,17 +64,6 @@ public class Cinematic implements ModInitializer {
         });
 
         arduino = port.getOutputStream();
-
-        System.out.println("Ready sent, awaiting arduino response...");
-        while (!sendEvent(ArduinoEvent.READY)) {
-            try {
-                Thread.sleep(1_000);
-                System.out.println("Ready not received, trying again.");
-            } catch (InterruptedException e) {
-                System.out.println("Thread interrupted:");
-                e.printStackTrace();
-            }
-        };
 
 
         // Initialize event listeners
@@ -121,6 +121,15 @@ public class Cinematic implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
+            if (tickTimer % 100 == 0) { // attempt to send a ready every 5 seconds
+                System.out.println("Ready sent, awaiting arduino response...");
+                if (!sendEvent(ArduinoEvent.READY)) {
+                    System.out.println("Failed to send Ready.");
+                };
+            }
+
+            tickTimer++;
+
             List<ServerPlayerEntity> players = server.getPlayerManager().getPlayerList();
             if (!connected || players.stream().noneMatch(this::isValidPlayer)) {
                 if (waterStatus) {

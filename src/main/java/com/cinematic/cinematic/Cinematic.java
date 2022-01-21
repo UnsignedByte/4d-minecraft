@@ -52,10 +52,18 @@ public class Cinematic implements ModInitializer {
             }
         });
 
-        System.out.println("Ready sent, awaiting arduino response...");
-        if (!sendEvent(ArduinoEvent.READY)) return;
-
         arduino = port.getOutputStream();
+
+        System.out.println("Ready sent, awaiting arduino response...");
+        while (!sendEvent(ArduinoEvent.READY)) {
+            try {
+                Thread.sleep(1_000);
+                System.out.println("Ready not received, trying again.");
+            } catch (InterruptedException e) {
+                System.out.println("Thread interrupted:");
+                e.printStackTrace();
+            }
+        };
 
 
         // Initialize event listeners
@@ -179,13 +187,17 @@ public class Cinematic implements ModInitializer {
      * @return success of send
      */
     private boolean sendEvent(ArduinoEvent evt) {
+        if (arduino == null) {
+            System.out.printf("Failed to send event %s: Missing output stream.%n", evt.name());
+            return false;
+        }
         byte[] buf = {evt.value};
         try {
             arduino.write(buf);
             return true;
         } catch (IOException e) {
+            System.out.printf("Failed to send event %s: IO Exception%n", evt.name());
             e.printStackTrace();
-            System.out.printf("Failed to send event %s.%n", evt.name());
             return false;
         }
     }

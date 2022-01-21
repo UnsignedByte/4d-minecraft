@@ -15,7 +15,10 @@ void loop() {
   if (Serial.available()) {
     byte b = Serial.read();
     if (!connected) {
-      if (b == 7) Serial.write("ready");
+      if (b == 7) {
+        Serial.write("ready");
+        connected = true;
+      }
     } else {
       switch (b) {
         case 0:

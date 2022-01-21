@@ -3,6 +3,9 @@ package com.cinematic.cinematic;
 import com.cinematic.cinematic.events.EatEventCallback;
 import com.cinematic.cinematic.events.FallEventCallback;
 import com.cinematic.cinematic.events.PlayerTickCallback;
+import com.fazecast.jSerialComm.SerialPort;
+import com.fazecast.jSerialComm.SerialPortDataListener;
+import com.fazecast.jSerialComm.SerialPortEvent;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.entity.player.PlayerEntity;
@@ -11,25 +14,59 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.ActionResult;
 import net.minecraft.world.GameMode;
 
+import java.io.IOException;
+import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.List;
-import java.util.Objects;
 
 public class Cinematic implements ModInitializer {
 
     private boolean waterStatus, fireStatus;
     private static final int DAMAGE_CUTOFF = 5; // 2.5 hearts of fall damage or more
 
+    private boolean connected = false;
+    private OutputStream arduino;
+
     @Override
     public void onInitialize() {
-        System.out.println("Mod Initialized");
+
+        // Initialize arduino serial port
+        SerialPort port = SerialPort.getCommPort("COM5");
+        port.setComPortParameters(9600, 8, 1, 0);
+        port.setComPortTimeouts(SerialPort.TIMEOUT_NONBLOCKING, 0, 0);
+        System.out.printf("Open port: %b%n", port.openPort());
+
+        port.addDataListener(new SerialPortDataListener() {
+            @Override
+            public int getListeningEvents() {
+                return SerialPort.LISTENING_EVENT_DATA_AVAILABLE;
+            }
+
+            @Override
+            public void serialEvent(SerialPortEvent event) {
+                System.out.printf("Received %s%n", new String(event.getReceivedData()));
+                if (java.util.Arrays.equals(event.getReceivedData(),"ready".getBytes(StandardCharsets.UTF_8))) {
+                    System.out.println("Received ready.");
+                    connected = true;
+                }
+            }
+        });
+
+        System.out.println("Ready sent, awaiting arduino response...");
+        if (!sendEvent(ArduinoEvent.READY)) return;
+
+        arduino = port.getOutputStream();
+
+
+        // Initialize event listeners
 
         EatEventCallback.EVENT.register(((player, itemstack) -> {
 
             if (isValidPlayer(player)) {
                 fireEvent(EventType.EAT);
-            }
 
-            System.out.printf("%s ate %s%n", player.getName().asString(), itemstack.getItem().getName().asString());
+                System.out.printf("%s ate %s%n", player.getName().asString(), itemstack.getItem().getName().asString());
+            }
 
             return ActionResult.PASS;
         }));
@@ -42,7 +79,15 @@ public class Cinematic implements ModInitializer {
                     waterStatus = tmp;
                     System.out.printf("%s %s water.%n%n", player.getName().asString(), waterStatus ? "left" : "entered");
 
-                    fireEvent(EventType.WATER);
+                    /*
+                    W | R | W
+                    0 | 1 | 0
+                    1 | 1 | 1
+                    1 | 0 | 0
+                    0 | 0 | 1
+                     */
+
+                    waterStatus ^= !fireEvent(EventType.WATER);
                 }
 
                 tmp = player.isOnFire();
@@ -50,7 +95,7 @@ public class Cinematic implements ModInitializer {
                     fireStatus = tmp;
                     System.out.printf("%s %s burning.%n%n", player.getName().asString(), fireStatus ? "started" : "stopped");
 
-                    fireEvent(EventType.FIRE);
+                    fireStatus ^= !fireEvent(EventType.FIRE);
                 }
             }
             return ActionResult.PASS;
@@ -69,18 +114,20 @@ public class Cinematic implements ModInitializer {
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
             List<ServerPlayerEntity> players = server.getPlayerManager().getPlayerList();
-            if (players.stream().noneMatch(this::isValidPlayer)) {
+            if (!connected || players.stream().noneMatch(this::isValidPlayer)) {
                 if (waterStatus) {
                     waterStatus = false;
-                    fireEvent(EventType.WATER);
+                    waterStatus = !fireEvent(EventType.WATER); // keep at false if success, set back to true if fail
                 }
 
                 if (fireStatus) {
                     fireStatus = false;
-                    fireEvent(EventType.FIRE);
+                    fireStatus = !fireEvent(EventType.FIRE); // keep at false if success, set back to true if fail
                 }
             }
         });
+
+        System.out.println("Mod Initialized");
     }
 
     private boolean isValidPlayer(PlayerEntity p) {
@@ -93,28 +140,68 @@ public class Cinematic implements ModInitializer {
         return sp.getScoreboardTags().contains("water") && sp.interactionManager.getGameMode() == GameMode.SURVIVAL;
     }
 
-    private void fireEvent(EventType type) {
+    /**
+     * Fires an event type to the arduinos
+     * @param type The type of event to fire
+     * @return Success of message send
+     */
+    private boolean fireEvent(EventType type) {
         switch (type) {
             case WATER:
                 if (waterStatus) {
                     System.out.println("Pouring water...");
+                    return sendEvent(ArduinoEvent.WATER_BEGIN);
                 } else {
                     System.out.println("Stopped pouring.");
+                    return sendEvent(ArduinoEvent.WATER_END);
                 }
-                break;
             case EAT:
                 System.out.println("Please eat now.");
-                break;
+                sendEvent(ArduinoEvent.EAT);
             case FIRE:
                 if (fireStatus) {
                     System.out.println("Pouring hot sauce...");
+                    return sendEvent(ArduinoEvent.FIRE_BEGIN);
                 } else {
                     System.out.println("Stopped pouring.");
+                    return sendEvent(ArduinoEvent.FIRE_END);
                 }
-                break;
             case FALL:
                 System.out.println("Big Fall Detected.");
-                break;
+                return sendEvent(ArduinoEvent.FALL);
+        }
+        return false;
+    }
+
+    /**
+     * Sends event to the arduino
+     * @param evt event to send
+     * @return success of send
+     */
+    private boolean sendEvent(ArduinoEvent evt) {
+        byte[] buf = {evt.value};
+        try {
+            arduino.write(buf);
+            return true;
+        } catch (IOException e) {
+            e.printStackTrace();
+            System.out.printf("Failed to send event %s.%n", evt.name());
+            return false;
+        }
+    }
+
+    private enum ArduinoEvent {
+        WATER_BEGIN ((byte) 0),
+        WATER_END ((byte) 1),
+        FIRE_BEGIN ((byte) 2),
+        FIRE_END((byte) 3),
+        EAT ((byte) 4),
+        FALL ((byte) 5),
+        READY ((byte) 7);
+
+        byte value;
+        ArduinoEvent(byte value) {
+            this.value = value;
         }
     }
 }

@@ -11,14 +11,17 @@ import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.sound.SoundCategory;
+import net.minecraft.sound.SoundEvents;
 import net.minecraft.util.ActionResult;
 import net.minecraft.world.GameMode;
 
 import java.io.IOException;
 import java.io.OutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
+
+
 
 public class Cinematic implements ModInitializer {
 
@@ -26,8 +29,8 @@ public class Cinematic implements ModInitializer {
     private static final int DAMAGE_CUTOFF = 5; // 2.5 hearts of fall damage or more
 
     private boolean connected = false;
-    private OutputStream arduino;
     private int tickTimer = 0;
+    private SerialPort port;
 
     @Override
     public void onInitialize() {
@@ -37,7 +40,7 @@ public class Cinematic implements ModInitializer {
             System.out.println("No Available serial ports found, aborting...");
             return;
         }
-        SerialPort port = SerialPort.getCommPorts()[0];
+        port = SerialPort.getCommPorts()[0];
         System.out.printf("Choosing %s out of available serial ports: %s%n",  port, Arrays.toString(SerialPort.getCommPorts()));
         port.setComPortParameters(9600, 8, 1, 0);
         port.setComPortTimeouts(SerialPort.TIMEOUT_NONBLOCKING, 0, 0);
@@ -55,15 +58,23 @@ public class Cinematic implements ModInitializer {
 
             @Override
             public void serialEvent(SerialPortEvent event) {
-                System.out.printf("Received %s%n", new String(event.getReceivedData()));
-                if (java.util.Arrays.equals(event.getReceivedData(),"ready".getBytes(StandardCharsets.UTF_8))) {
-                    System.out.println("Received ready.");
+                byte[] data = new byte[1];
+                try {
+                    if (port.getInputStream().read(data) < 1) {
+                        System.out.println("Found no bytes to read, returning...");
+                        return;
+                    };
+                } catch (IOException e) {
+                    System.out.println("Failed to read data.");
+                    e.printStackTrace();
+                }
+                System.out.printf("Recieved: %d%n", data[0]);
+                if (data[0] == 7) {
+                    System.out.println("Ready.");
                     connected = true;
                 }
             }
         });
-
-        arduino = port.getOutputStream();
 
 
         // Initialize event listeners
@@ -114,6 +125,7 @@ public class Cinematic implements ModInitializer {
             System.out.printf("%s fell for %d damage%n", player.getName().asString(), damage);
 
             if (damage > DAMAGE_CUTOFF && isValidPlayer(player)) {
+                player.world.playSound(null, player.getBlockPos(), SoundEvents.ENTITY_PLAYER_LEVELUP, SoundCategory.RECORDS, 10f, 1f);
                 fireEvent(EventType.FALL);
             }
 
@@ -121,7 +133,7 @@ public class Cinematic implements ModInitializer {
         });
 
         ServerTickEvents.END_SERVER_TICK.register(server -> {
-            if (tickTimer % 100 == 0) { // attempt to send a ready every 5 seconds
+            if (!connected && tickTimer % 100 == 0) { // attempt to send a ready every 5 seconds
                 System.out.println("Ready sent, awaiting arduino response...");
                 if (!sendEvent(ArduinoEvent.READY)) {
                     System.out.println("Failed to send Ready.");
@@ -158,7 +170,7 @@ public class Cinematic implements ModInitializer {
     }
 
     /**
-     * Fires an event type to the arduinos
+     * Fires an event type to the arduino
      * @param type The type of event to fire
      * @return Success of message send
      */
@@ -196,13 +208,16 @@ public class Cinematic implements ModInitializer {
      * @return success of send
      */
     private boolean sendEvent(ArduinoEvent evt) {
-        if (arduino == null) {
+        System.out.println(port.isOpen() ? "Port is open" : "Port is closed");
+        OutputStream out = port.getOutputStream();
+        if (out == null) {
             System.out.printf("Failed to send event %s: Missing output stream.%n", evt.name());
             return false;
         }
         byte[] buf = {evt.value};
         try {
-            arduino.write(buf);
+            System.out.printf("Sending %d.%n", evt.value);
+            out.write(buf);
             return true;
         } catch (IOException e) {
             System.out.printf("Failed to send event %s: IO Exception%n", evt.name());
